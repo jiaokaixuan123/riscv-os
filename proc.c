@@ -56,10 +56,10 @@ static void dump_stack_window(void *base){
 
 // 内核线程统一包装入口，防止线程函数返回后再次递归执行
 static void kernel_thread_start(void){
-  dprint("[kernel_thread_start] current=%d name=%s\n", current?current->pid:-1, current?current->name:"?");
+  // dprint("[kernel_thread_start] current=%d name=%s\n", current?current->pid:-1, current?current->name:"?");
   if(!current) panic("no current in kernel_thread_start");
   void (*fn)(void) = (void(*)())current->context.s0; // 保存的原始入口
-  dprint("[kernel_thread_start] calling entry function\n");
+  // dprint("[kernel_thread_start] calling entry function\n");
   fn();
   exit_process(0); // 不返回
   for(;;) yield(); // 保险：绝不返回
@@ -140,11 +140,11 @@ struct proc* alloc_process(void){
 // 创建一个新的进程（内核线程）
 int create_process(void (*entry)(void), const char *name){
   // dprint("[create_process] attempting to create process '%s' (caller pid=%d) ...\n", name, current?current->pid:-1);
-  if(!entry){ dprint("[create] null entry\n"); return -1; }
+  if(!entry){ return -1; }
   struct proc *p = alloc_process(); 
   // dprint("[create_process] after alloc_process\n");
-  if(!p){ dprint("[create] alloc_process failed for '%s'\n", name); return -1; }
-  dprint("[create_process] '%s' pid=%d\n", name, p->pid);
+  if(!p){ return -1; }
+  // dprint("[create_process] '%s' pid=%d\n", name, p->pid);
   acquire(&p->lock);
   // dprint("[create_process] acquired lock pid=%d\n", p->pid);
   p->parent = current;
@@ -167,7 +167,7 @@ int create_process(void (*entry)(void), const char *name){
   p->context.sp = (uint64)p->kstack + PGSIZE;
   strncpy(p->name, name?name:"kth", sizeof(p->name)-1); p->name[sizeof(p->name)-1]='\0';
   p->state = RUNNABLE;
-  dprint("[create] pid=%d RUNNABLE\n", p->pid);
+  // dprint("[create] pid=%d RUNNABLE\n", p->pid);
   // 输出哨兵区域（暂时禁用，避免UART阻塞）
   // dump_stack_window(p->kstack);
   release(&p->lock);
@@ -386,30 +386,34 @@ int wait_all(void){
 // 退出当前进程，释放资源
 void exit_process(int status){
   struct proc *p = current;
-  if(!p){ dprint("[exit] no current\n"); return; }
+  if(!p){ return; }
   acquire(&p->lock);
   p->xstate = status;
   for(int i=0;i<NPROC;i++){
     if(proc[i].parent == p){ acquire(&proc[i].lock); proc[i].parent = initproc; release(&proc[i].lock); }
   }
   p->state = ZOMBIE;
-  dprint("[exit] pid=%d status=%d\n", p->pid, status);
   wakeup(p->parent);
   release(&p->lock);
   yield();
+  panic("zombie exit");  // 永不应该到达这里
 }
 
 // 等待子进程退出
 int wait_process(int *status){
   struct proc *cp = current;
-  if(!cp){ dprint("[wait] no current\n"); return -1; }
+  if(!cp){ return -1; }
+  // dprint("[wait_process] pid=%d acquiring lock...\n", cp->pid);
   acquire(&cp->lock);
+  // dprint("[wait_process] pid=%d lock acquired, scanning for children...\n", cp->pid);
   for(;;){
     int havekids=0;
     for(int i=0;i<NPROC;i++){
+      if(&proc[i] == cp) continue;  // 跳过自己，避免死锁
       acquire(&proc[i].lock);
       if(proc[i].parent==cp && proc[i].state!=UNUSED){
-        havekids=1;
+        havekids++;
+        // dprint("[wait_process] found child pid=%d state=%s\n", proc[i].pid, proc_state_name(proc[i].state));
         if(proc[i].state==ZOMBIE){
           int pid=proc[i].pid;
           if(status) *status = proc[i].xstate;
@@ -420,16 +424,18 @@ int wait_process(int *status){
           if(proc[i].kstack){ free_page(proc[i].kstack); proc[i].kstack=0; }
           proc[i].state=UNUSED; proc[i].parent=0;
           release(&proc[i].lock); release(&cp->lock);
-          dprint("[wait] reaped pid=%d status=%d\n", pid, status?*status:0);
-          dump_runnable_counts();
+          printf("[wait] reaped pid=%d\n", pid);
+          // dump_runnable_counts();
           return pid;
         }
       }
       release(&proc[i].lock);
     }
-    if(!havekids || cp->killed){ dprint("[wait] done havekids=%d killed=%d\n", havekids, cp->killed); release(&cp->lock); return -1; }
-    dprint("[wait] sleep pid=%d\n", cp->pid);
+    // dprint("[wait_process] pid=%d havekids=%d\n", cp->pid, havekids);
+    if(!havekids || cp->killed){ release(&cp->lock); return -1; }
+    // dprint("[wait] pid=%d sleeping on chan=%p\n", cp->pid, cp);
     sleep_chan(cp,&cp->lock);
+    // dprint("[wait] pid=%d woke up!\n", cp->pid);
   }
 }
 
@@ -453,9 +459,8 @@ int set_priority(int pid, int prio){
 // 让出CPU，进入调度器
 void yield(void){
   if(!current){ dprint("[yield] no current\n"); return; }
-  dprint("[yield] enter pid=%d\n", current->pid);
   acquire(&current->lock);
-  if(current->state == RUNNING){ current->state = RUNNABLE; dprint("[yield] pid=%d -> RUNNABLE\n", current->pid); }
+  if(current->state == RUNNING){ current->state = RUNNABLE; }
   release(&current->lock);
   extern void swtch(struct context*, struct context*);
   uint64 t0 = r_time();
@@ -463,12 +468,12 @@ void yield(void){
   uint64 t1 = r_time();
   ctx_switch_cycles_sum += (t1 - t0);
   ctx_switch_count++;
-  dprint("[yield] return pid_prev=%d\n", current?current->pid:-1);
 }
 
 // 调度器主循环
 // 基于优先级的调度算法，基于老化机制
 void scheduler(void){
+  int loop_count = 0;
   for(;;){
     intr_on();
     int best_idx=-1; int best_prio=-1;
@@ -481,30 +486,38 @@ void scheduler(void){
       release(&proc[i].lock);
     }
     if(best_idx>=0){
+      // dprint("[sched] selecting pid=%d prio=%d\n", proc[best_idx].pid, best_prio);
       acquire(&proc[best_idx].lock);
       if(proc[best_idx].state==RUNNABLE){
         proc[best_idx].state=RUNNING; current=&proc[best_idx]; proc[best_idx].sched_count++; proc[best_idx].slice_ticks=0;
-        dprint("[sched] switch to pid=%d prio=%d\n", proc[best_idx].pid, proc[best_idx].priority);
+        // dprint("[sched] switch to pid=%d prio=%d\n", proc[best_idx].pid, proc[best_idx].priority);
         release(&proc[best_idx].lock);
         extern void swtch(struct context*, struct context*);
         swtch(&sched_ctx,&proc[best_idx].context);
-        dprint("[sched] back from pid=%d\n", proc[best_idx].pid);
+        // dprint("[sched] back from pid=%d\n", proc[best_idx].pid);
         acquire(&proc[best_idx].lock);
         if(current && current->state==RUNNING){
-          if(current->priority>1) current->priority -= 2; current->state=RUNNABLE; dprint("[sched] post-run demote pid=%d prio=%d\n", current->pid, current->priority);
+          if(current->priority>1) current->priority -= 2; current->state=RUNNABLE; /* dprint("[sched] post-run demote pid=%d prio=%d\n", current->pid, current->priority); */
         }
         release(&proc[best_idx].lock);
         current=0;
       } else {
         release(&proc[best_idx].lock);
       }
+      loop_count++;
+    } else {
+      // 没有可运行的进程
+      if((loop_count % 1000) == 0) dprint("[sched] no runnable process\n");
+      loop_count++;
     }
   }
 }
 
 // 唤醒在 chan 上睡眠的进程
 void wakeup(void *chan){
+  struct proc *p = current;  // 保存当前进程指针
   for(int i=0;i<NPROC;i++){
+    if(&proc[i] == p) continue;  // 跳过当前进程，避免死锁
     acquire(&proc[i].lock); 
     if(proc[i].state == SLEEPING && proc[i].chan == chan){
       proc[i].state = RUNNABLE;

@@ -399,8 +399,14 @@ void test_process_creation(void) {
     } else { break; }
   }
   printf("Created %d processes, control will be returned to run_all_tests to wait for them.\n", count);
-  // Let run_all_tests wait for all children together
-  for (int i = 0; i < count; i++) { wait_process(NULL); }       // 等待所有子进程结束
+  // 测试等待所有子进程退出
+  printf("[test_process_creation] waiting for %d children...\n", count);
+  for (int i = 0; i < count; i++) { 
+    int status;
+    int pid = wait_process(&status);
+    printf("[test_process_creation] reaped child %d/%d pid=%d status=%d\n", i+1, count, pid, status);
+  }
+  printf("[test_process_creation] all children completed!\n");
  }
 // 调度器测试
 void test_scheduler(void) {
@@ -429,9 +435,13 @@ void manager_task(){ printf("[manager_task stub]\n"); exit_process(0); }
 // 运行所有测试
 static void run_all_tests(void){
   printf("[tests] start]\n");
+  printf("[tests] === Test 1: Process Creation ===\n");
   test_process_creation();
+  printf("[tests] === Test 2: Scheduler ===\n");
   test_scheduler();
+  printf("[tests] === Test 3: Synchronization ===\n");
   test_synchronization();
+  printf("[tests] === All tests completed, waiting for remaining children ===\n");
   int status; int reaped=0; int pid;
   while((pid = wait_process(&status)) > 0){
     printf("[tests] reaped pid=%d status=%d\n", pid, status);
