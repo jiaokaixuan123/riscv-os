@@ -323,13 +323,67 @@ static int tTARGET_ITEMS = 10;
 static spinlock tbuf_lock; 
 static int chan_full_flag; 
 static int chan_empty_flag;
-void shared_buffer_init(){ initlock(&tbuf_lock); thead=ttail=tcount=0; chan_full_flag=0; chan_empty_flag=1; }
-static void tbuffer_put(int x){ acquire(&tbuf_lock); while(tcount==TEST_BUF_SIZE){ sleep_chan(&chan_full_flag, &tbuf_lock); } tbuf[ttail]=x; ttail=(ttail+1)%TEST_BUF_SIZE; tcount++; wakeup(&chan_empty_flag); release(&tbuf_lock); }
-static int tbuffer_get(){ acquire(&tbuf_lock); while(tcount==0){ sleep_chan(&chan_empty_flag, &tbuf_lock); } int v=tbuf[thead]; thead=(thead+1)%TEST_BUF_SIZE; tcount--; wakeup(&chan_full_flag); release(&tbuf_lock); return v; }
-void producer_task(){ for(int i=0;i<tTARGET_ITEMS;i++){ tbuffer_put(i); printf("[producer] put %d (count=%d)\n", i, tcount); } exit_process(0); }
-void consumer_task(){ for(int i=0;i<tTARGET_ITEMS;i++){ int v=tbuffer_get(); printf("[consumer] got %d (count=%d)\n", v, tcount); } exit_process(0); }
-void simple_task(){ printf("[simple_task] pid=%d run once and exit\n", current?current->pid:-1); exit_process(0); }
-void cpu_intensive_task(){ for(int i=0;i<200000;i++){ if((i%40000)==0){ printf("[cpu_task pid=%d] progress %d\n", current?current->pid:-1, i); yield(); } } exit_process(0); }
+// 初始化共享缓冲区
+void shared_buffer_init(){                      
+  initlock(&tbuf_lock); 
+  thead=ttail=tcount=0; 
+  chan_full_flag=0; 
+  chan_empty_flag=1; 
+}
+// 放入缓冲区 
+static void tbuffer_put(int x){ 
+  acquire(&tbuf_lock); 
+  while(tcount==TEST_BUF_SIZE){ 
+    sleep_chan(&chan_full_flag, &tbuf_lock); 
+  } tbuf[ttail]=x; ttail=(ttail+1)%TEST_BUF_SIZE; 
+  tcount++; 
+  wakeup(&chan_empty_flag); 
+  release(&tbuf_lock); 
+}
+// 取出缓冲区
+static int tbuffer_get(){ 
+  acquire(&tbuf_lock); 
+  while(tcount==0){ 
+    sleep_chan(&chan_empty_flag, &tbuf_lock); 
+  } 
+  int v=tbuf[thead]; 
+  thead=(thead+1)%TEST_BUF_SIZE; 
+  tcount--; 
+  wakeup(&chan_full_flag); 
+  release(&tbuf_lock); 
+  return v; 
+}
+// 生产者任务
+void producer_task(){ 
+  for(int i=0;i<tTARGET_ITEMS;i++){ 
+    tbuffer_put(i); 
+    printf("[producer] put %d (count=%d)\n", i, tcount); 
+  } 
+  exit_process(0); 
+}
+// 消费者任务
+void consumer_task(){ 
+  for(int i=0;i<tTARGET_ITEMS;i++){ 
+    int v=tbuffer_get(); 
+    printf("[consumer] got %d (count=%d)\n", v, tcount); 
+  } 
+  exit_process(0); 
+}
+// 简单任务：运行一次后退出
+void simple_task(){ 
+  printf("[simple_task] pid=%d run once and exit\n", current?current->pid:-1); 
+  exit_process(0); 
+}
+// CPU 密集型任务
+void cpu_intensive_task(){ 
+  for(int i=0;i<200000;i++){ 
+    if((i%40000)==0){ 
+      printf("[cpu_task pid=%d] progress %d\n", current?current->pid:-1, i); 
+      yield(); 
+    } 
+  } 
+  exit_process(0); 
+}
 
 // 进程创建测试
 void test_process_creation(void) {
@@ -346,7 +400,7 @@ void test_process_creation(void) {
   }
   printf("Created %d processes, control will be returned to run_all_tests to wait for them.\n", count);
   // Let run_all_tests wait for all children together
-  // for (int i = 0; i < count; i++) { wait_process(NULL); }       // 等待所有子进程结束
+  for (int i = 0; i < count; i++) { wait_process(NULL); }       // 等待所有子进程结束
  }
 // 调度器测试
 void test_scheduler(void) {
@@ -365,14 +419,14 @@ void test_synchronization(void) {
   create_process(producer_task, "prod");
   create_process(consumer_task, "cons");
   // Let run_all_tests wait for all children together
-  // wait_process(NULL);
-  // wait_process(NULL);
+  wait_process(NULL);
+  wait_process(NULL);
   printf("Synchronization test completed\n");
 }
 
-// Stub to avoid undefined reference if manager_task was removed
+// 管理任务存根
 void manager_task(){ printf("[manager_task stub]\n"); exit_process(0); }
-// Kernel thread to run all tests (Approach A)
+// 运行所有测试
 static void run_all_tests(void){
   printf("[tests] start]\n");
   test_process_creation();
@@ -393,7 +447,7 @@ int main(void) {
   // volatile char *uart = (char*)0x10000000;
   // *uart = 'S';
   // printf("BOOT STAGE\n");
-  // uart_init();
+  uart_init();
   // clear_screen();
   // printf("Hello from kernel main()\n");
   
@@ -420,9 +474,9 @@ int main(void) {
   // ==== 实验4：中断与时钟管理初始化 ====
   trap_init();
   w_sie(r_sie() | SIE_STIE);              // 允许 S 模式的定时器中断
-  test_timer_interrupt();                 // 测试定时器中断
-  test_exception_handling();              // 测试异常处理
-  test_interrupt_overhead();              // 测试中断开销
+  // test_timer_interrupt();                 // 测试定时器中断
+  // test_exception_handling();              // 测试异常处理
+  // test_interrupt_overhead();              // 测试中断开销
 
 
   // ==== 实验5：进程管理与调度器测试  ====

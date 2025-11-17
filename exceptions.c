@@ -124,7 +124,7 @@ void handle_illegal_instruction(struct trapframe *tf){
     kernel_panic_with_tf("illegal instruction", tf);
   } else {
     kill_current("illegal instr");
-    tf->sepc += instr_len(tf->sepc); // 跳过非法指令继续 (可选)
+    tf->sepc += instr_len(tf->sepc); // 跳过非法指令继续
   }
 }
 
@@ -136,22 +136,34 @@ void handle_breakpoint(struct trapframe *tf){
 
 // 处理加载地址未对齐异常
 void handle_load_addr_misaligned(struct trapframe *tf){
-  if(is_kernel_trap(tf)) kernel_panic_with_tf("load addr misaligned", tf); else { kill_current("load addr misaligned"); }
+  if(is_kernel_trap(tf)) 
+    kernel_panic_with_tf("load addr misaligned", tf); 
+  else 
+    { kill_current("load addr misaligned"); }
 }
 
 // 处理加载访问错误异常
 void handle_load_access_fault(struct trapframe *tf){
-  if(is_kernel_trap(tf)) kernel_panic_with_tf("load access fault", tf); else { kill_current("load access fault"); }
+  if(is_kernel_trap(tf)) 
+    kernel_panic_with_tf("load access fault", tf); 
+  else 
+    { kill_current("load access fault"); }
 }
 
 // 处理存储地址未对齐异常
 void handle_store_addr_misaligned(struct trapframe *tf){
-  if(is_kernel_trap(tf)) kernel_panic_with_tf("store addr misaligned", tf); else { kill_current("store addr misaligned"); }
+  if(is_kernel_trap(tf)) 
+    kernel_panic_with_tf("store addr misaligned", tf); 
+  else 
+    { kill_current("store addr misaligned"); }
 }
 
 // 处理存储访问错误异常
 void handle_store_access_fault(struct trapframe *tf){
-  if(is_kernel_trap(tf)) kernel_panic_with_tf("store access fault", tf); else { kill_current("store access fault"); }
+  if(is_kernel_trap(tf)) 
+    kernel_panic_with_tf("store access fault", tf); 
+  else 
+    { kill_current("store access fault"); }
 }
 
 // ================== 页错误懒分配 ==================

@@ -52,6 +52,9 @@ void pmm_init_range(uint64 start, uint64 end) {
 void* alloc_page(void) {
   acquire(&kmem.lock);    // 加锁
   run *r = kmem.freelist;  // 取空闲页
+  if (!r) { // 检查 freelist 是否为空
+    panic("alloc_page: out of memory");
+  }
   if (r) {
     kmem.freelist = r->next;
     kmem.free_pages--;

@@ -31,6 +31,8 @@ extern volatile uint64 ticks;     // 全局tick计数
 
 // 内联读取 tp
 static inline uint64 read_tp(){ uint64 x; asm volatile("mv %0, tp" : "=r"(x)); return x; }
+// 内联读取 sp 用于调试堆栈使用
+static inline uint64 read_sp(){ uint64 x; asm volatile("mv %0, sp" : "=r"(x)); return x; }
 
 // 初始化进程上下文，使其在切换时从 fn 开始执行
 static void init_context(struct context *c, void (*fn)(void)){
@@ -38,15 +40,25 @@ static void init_context(struct context *c, void (*fn)(void)){
   c->ra = (uint64)fn;       // 返回地址设置为线程体
 }
 
-// Forward declaration placed before first use to avoid implicit non-static declaration
+// 映射用户代码到用户页表
 static void map_user_code(pagetable_t pt, uint8 *code, uint64 sz);
-// Added forward declaration to fix implicit declaration warning
+//
 void dump_runnable_counts(void);
+
+// 调试: 简单堆栈窗口转储（低端16字双字）
+static void dump_stack_window(void *base){
+  uint64 *p = (uint64*)base;
+  dprint("[stackdump base=%p] ", base);
+  for(int i=0;i<16;i++){ dprint("%lx ", p[i]); }
+  dprint("\n");
+}
 
 // 内核线程统一包装入口，防止线程函数返回后再次递归执行
 static void kernel_thread_start(void){
+  dprint("[kernel_thread_start] current=%d sp=%p kstack=%p top=%p\n", current?current->pid:-1, read_sp(), current?current->kstack:0, current?(void*)((uint64)current->kstack+PGSIZE):0);
   if(!current) panic("no current in kernel_thread_start");
   void (*fn)(void) = (void(*)())current->context.s0; // 保存的原始入口
+  dprint("[kernel_thread_start] entry=%p name=%s\n", fn, current?current->name:"?");
   fn();
   exit_process(0); // 不返回
   for(;;) yield(); // 保险：绝不返回
@@ -92,9 +104,9 @@ static int allocpid(){
 
 // 分配一个新的进程结构体
 struct proc* alloc_process(void){
+  dprint("[alloc_process] begin scan NPROC=%d current=%d\n", NPROC, current?current->pid:-1);
   for(int i=0;i<NPROC;i++){
-    // Skip self to avoid deadlock when current is RUNNING and holds its own lock
-    // if(current == &proc[i]) continue; // This logic is flawed, remove it
+    dprint("[alloc_process] check slot=%d\n", i);
     acquire(&proc[i].lock);
     if(proc[i].state == UNUSED){
       proc[i].state = USED;
@@ -126,21 +138,26 @@ struct proc* alloc_process(void){
 
 // 创建一个新的进程（内核线程）
 int create_process(void (*entry)(void), const char *name){
-  dprint("[create_process] attempting to create process '%s'...\n", name);
+  dprint("[create_process] attempting to create process '%s' (caller pid=%d sp=%p) ...\n", name, current?current->pid:-1, read_sp());
   if(!entry){ dprint("[create] null entry\n"); return -1; }
   struct proc *p = alloc_process(); 
+  dprint("[create_process] after alloc_process ptr=%p caller_sp=%p\n", p, read_sp());
   if(!p){ dprint("[create] alloc_process failed for '%s'\n", name); return -1; }
   dprint("[create_process] alloc_process succeeded for '%s', pid=%d\n", name, p->pid);
   acquire(&p->lock);
+  dprint("[create_process] acquired lock pid=%d sp=%p\n", p->pid, read_sp());
   p->parent = current;
   p->kstack = alloc_page();
+  dprint("[create_process] alloc_page returned %p sp=%p\n", p->kstack, read_sp());
   if(!p->kstack){ 
     p->state=UNUSED; 
     release(&p->lock); 
     dprint("[create] kstack alloc failed for pid=%d name='%s'\n", p->pid, name); 
     return -1; 
   }
-  dprint("[create_process] kstack allocated for pid=%d at %p\n", p->pid, p->kstack);
+  // 预填充栈低端哨兵用于溢出检测
+  memset(p->kstack, 0xAA, 128);
+  dprint("[create_process] kstack allocated for pid=%d at %p (top=%p)\n", p->pid, p->kstack, (void*)((uint64)p->kstack+PGSIZE));
   p->trapframe = 0;
   p->pagetable = 0;
   p->is_kernel_thread = 1;
@@ -149,8 +166,11 @@ int create_process(void (*entry)(void), const char *name){
   p->context.sp = (uint64)p->kstack + PGSIZE;
   strncpy(p->name, name?name:"kth", sizeof(p->name)-1); p->name[sizeof(p->name)-1]='\0';
   p->state = RUNNABLE;
-  dprint("[create] pid=%d name=%s entry=%p sp=%p parent=%d\n", p->pid, p->name, (void*)entry, (void*)p->context.sp, p->parent?p->parent->pid:-1);
+  dprint("[create] pid=%d name=%s entry=%p sp(set)=%p parent=%d caller_sp_now=%p\n", p->pid, p->name, (void*)entry, (void*)p->context.sp, p->parent?p->parent->pid:-1, read_sp());
+  // 输出哨兵区域
+  dump_stack_window(p->kstack);
   release(&p->lock);
+  dprint("[create_process] released lock pid=%d sp=%p\n", p->pid, read_sp());
   dump_runnable_counts();
   return p->pid;
 }
@@ -432,6 +452,7 @@ int set_priority(int pid, int prio){
 // 让出CPU，进入调度器
 void yield(void){
   if(!current){ dprint("[yield] no current\n"); return; }
+  dprint("[yield] enter pid=%d sp=%p\n", current->pid, read_sp());
   acquire(&current->lock);
   if(current->state == RUNNING){ current->state = RUNNABLE; dprint("[yield] pid=%d -> RUNNABLE\n", current->pid); }
   release(&current->lock);
@@ -441,6 +462,7 @@ void yield(void){
   uint64 t1 = r_time();
   ctx_switch_cycles_sum += (t1 - t0);
   ctx_switch_count++;
+  dprint("[yield] return pid_prev=%d cycles=%lu sp=%p\n", current?current->pid:-1, (unsigned long)(t1-t0), read_sp());
 }
 
 // 调度器主循环
@@ -451,20 +473,30 @@ void scheduler(void){
     int best_idx=-1; int best_prio=-1;
     for(int i=0;i<NPROC;i++){
       acquire(&proc[i].lock);
-      if(proc[i].state==RUNNABLE){ if(proc[i].priority < proc[i].base_priority + 50) proc[i].priority++; if(proc[i].priority > best_prio){ best_prio=proc[i].priority; best_idx=i; } }
+      if(proc[i].state==RUNNABLE){
+        if(proc[i].priority < proc[i].base_priority + 50) proc[i].priority++;
+        if(proc[i].priority > best_prio){ best_prio=proc[i].priority; best_idx=i; }
+      }
       release(&proc[i].lock);
     }
     if(best_idx>=0){
       acquire(&proc[best_idx].lock);
       if(proc[best_idx].state==RUNNABLE){
         proc[best_idx].state=RUNNING; current=&proc[best_idx]; proc[best_idx].sched_count++; proc[best_idx].slice_ticks=0;
-        dprint("[sched] switch to pid=%d prio=%d\n", proc[best_idx].pid, proc[best_idx].priority);
+        dprint("[sched] switch to pid=%d prio=%d sp=%p kstack=%p top=%p\n", proc[best_idx].pid, proc[best_idx].priority, read_sp(), proc[best_idx].kstack, (void*)((uint64)proc[best_idx].kstack+PGSIZE));
+        release(&proc[best_idx].lock);
         extern void swtch(struct context*, struct context*);
         swtch(&sched_ctx,&proc[best_idx].context);
-        if(current && current->state==RUNNING){ if(current->priority>1) current->priority -= 2; current->state=RUNNABLE; dprint("[sched] post-run demote pid=%d prio=%d\n", current->pid, current->priority); }
+        dprint("[sched] back from pid=%d sp=%p current=%d\n", proc[best_idx].pid, read_sp(), current?current->pid:-1);
+        acquire(&proc[best_idx].lock);
+        if(current && current->state==RUNNING){
+          if(current->priority>1) current->priority -= 2; current->state=RUNNABLE; dprint("[sched] post-run demote pid=%d prio=%d sp=%p\n", current->pid, current->priority, read_sp());
+        }
+        release(&proc[best_idx].lock);
         current=0;
+      } else {
+        release(&proc[best_idx].lock);
       }
-      release(&proc[best_idx].lock);
     }
   }
 }
@@ -509,7 +541,7 @@ void debug_proc_table(void){
   printf("=== Process Table ===\n");
   for(int i=0;i<NPROC;i++){
     struct proc *p = &proc[i];
-    if(p == current) { // Don't acquire lock for current process
+    if(p == current) { 
         if(p->state != UNUSED){
           printf("PID:%d State:%s Name:%s Parent:%d run=%lu sched=%lu slice=%u (current)\n", p->pid, proc_state_name(p->state), p->name, p->parent?p->parent->pid:-1, p->run_ticks, p->sched_count, p->slice_ticks);
         }

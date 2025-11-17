@@ -2,6 +2,14 @@
 .globl swtch
 # void swtch(struct context *old, struct context *new)
 swtch:
+  # DEBUG: mark entry to swtch
+  li t0, 0x10000000          # UART base
+  li t1, '['
+  sb t1, 0(t0)
+  li t1, 'S'
+  sb t1, 0(t0)
+  li t1, ']'
+  sb t1, 0(t0)
   # a0=old, a1=new
   # 保存旧寄存器
   sd ra, 0(a0)
@@ -33,4 +41,8 @@ swtch:
   ld s9, 88(a1)
   ld s10,96(a1)
   ld s11,104(a1)
+  # DEBUG: mark about to jump to new ra
+  li t0, 0x10000000
+  li t1, '{'
+  sb t1, 0(t0)
   ret

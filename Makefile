@@ -1,13 +1,12 @@
-# Minimal Makefile to build and run on qemu-system-riscv64
 CROSS  ?= riscv64-unknown-elf-
 CC     := $(CROSS)gcc
 LD     := $(CROSS)ld
 OBJCOPY:= $(CROSS)objcopy
 
-CFLAGS := -Wall -Wextra -Os -ffreestanding -nostdlib -nostartfiles -march=rv64gc -mabi=lp64 -I. -mcmodel=medany -fno-pic -DDEBUG
+CFLAGS := -Wall -Wextra -Os -ffreestanding -nostdlib -nostartfiles -march=rv64gc -mabi=lp64 -I. -mcmodel=medany -fno-pic -DDEBUG -DPRINTF_TRACE
 LDFLAGS:= -T kernel.ld -nostdlib -z max-page-size=4096
 
-# Auto-discover sources in the current directory
+# 自动发现当前目录下的源文件
 CSRCS := $(wildcard *.c)
 ASRCS_UP := $(wildcard *.S)
 ASRCS_LO := $(wildcard *.s)
@@ -28,11 +27,11 @@ all: kernel.elf
 %.o: %.s
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# === 链接规则（缺这个就会报 No rule to make target 'kernel.elf'）===
+# === 链接规则 ===
 kernel.elf: $(OBJS) kernel.ld
 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
 
-# ---- QEMU config (短且好记) ----
+# ---- QEMU config ----
 QEMU      := qemu-system-riscv64
 QEMU_ARGS := -M virt -bios none -kernel kernel.elf -serial mon:stdio -display none
 
