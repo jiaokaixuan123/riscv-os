@@ -49,16 +49,17 @@ void dump_runnable_counts(void);
 static void dump_stack_window(void *base){
   uint64 *p = (uint64*)base;
   dprint("[stackdump base=%p] ", base);
-  for(int i=0;i<16;i++){ dprint("%lx ", p[i]); }
-  dprint("\n");
+  // 减少输出量，避免UART阻塞
+  for(int i=0;i<4;i++){ dprint("%lx ", p[i]); }
+  dprint("...\n");
 }
 
 // 内核线程统一包装入口，防止线程函数返回后再次递归执行
 static void kernel_thread_start(void){
-  dprint("[kernel_thread_start] current=%d sp=%p kstack=%p top=%p\n", current?current->pid:-1, read_sp(), current?current->kstack:0, current?(void*)((uint64)current->kstack+PGSIZE):0);
+  dprint("[kernel_thread_start] current=%d name=%s\n", current?current->pid:-1, current?current->name:"?");
   if(!current) panic("no current in kernel_thread_start");
   void (*fn)(void) = (void(*)())current->context.s0; // 保存的原始入口
-  dprint("[kernel_thread_start] entry=%p name=%s\n", fn, current?current->name:"?");
+  dprint("[kernel_thread_start] calling entry function\n");
   fn();
   exit_process(0); // 不返回
   for(;;) yield(); // 保险：绝不返回
@@ -85,7 +86,7 @@ void proc_init(void){
       panic("proc_init: failed to allocate kstack for initproc");
     }
     init_context(&initproc->context, 0);                        // 初始化上下文
-    initproc->state = USED;                                     // 状态为 USED
+    initproc->state = RUNNING;                                  // 状态为 RUNNING（当前正在运行）
     release(&initproc->lock);
     dprint("[proc_init] init process created successfully. pid=%d\n", initproc->pid);
     current = initproc; // Set current process to initproc
@@ -104,9 +105,9 @@ static int allocpid(){
 
 // 分配一个新的进程结构体
 struct proc* alloc_process(void){
-  dprint("[alloc_process] begin scan NPROC=%d current=%d\n", NPROC, current?current->pid:-1);
+  // dprint("[alloc_process] begin scan NPROC=%d current=%d\n", NPROC, current?current->pid:-1);
   for(int i=0;i<NPROC;i++){
-    dprint("[alloc_process] check slot=%d\n", i);
+    // dprint("[alloc_process] check slot=%d\n", i);
     acquire(&proc[i].lock);
     if(proc[i].state == UNUSED){
       proc[i].state = USED;
@@ -126,7 +127,7 @@ struct proc* alloc_process(void){
       proc[i].pagetable = 0;
       proc[i].is_kernel_thread = 0;
       release(&proc[i].lock);
-      dprint("[alloc] success pid=%d slot=%d\n", proc[i].pid, i);
+      // dprint("[alloc] success pid=%d slot=%d\n", proc[i].pid, i);
       return &proc[i];
     }
     release(&proc[i].lock);
@@ -138,17 +139,17 @@ struct proc* alloc_process(void){
 
 // 创建一个新的进程（内核线程）
 int create_process(void (*entry)(void), const char *name){
-  dprint("[create_process] attempting to create process '%s' (caller pid=%d sp=%p) ...\n", name, current?current->pid:-1, read_sp());
+  // dprint("[create_process] attempting to create process '%s' (caller pid=%d) ...\n", name, current?current->pid:-1);
   if(!entry){ dprint("[create] null entry\n"); return -1; }
   struct proc *p = alloc_process(); 
-  dprint("[create_process] after alloc_process ptr=%p caller_sp=%p\n", p, read_sp());
+  // dprint("[create_process] after alloc_process\n");
   if(!p){ dprint("[create] alloc_process failed for '%s'\n", name); return -1; }
-  dprint("[create_process] alloc_process succeeded for '%s', pid=%d\n", name, p->pid);
+  dprint("[create_process] '%s' pid=%d\n", name, p->pid);
   acquire(&p->lock);
-  dprint("[create_process] acquired lock pid=%d sp=%p\n", p->pid, read_sp());
+  // dprint("[create_process] acquired lock pid=%d\n", p->pid);
   p->parent = current;
   p->kstack = alloc_page();
-  dprint("[create_process] alloc_page returned %p sp=%p\n", p->kstack, read_sp());
+  // dprint("[create_process] alloc_page done\n");
   if(!p->kstack){ 
     p->state=UNUSED; 
     release(&p->lock); 
@@ -157,7 +158,7 @@ int create_process(void (*entry)(void), const char *name){
   }
   // 预填充栈低端哨兵用于溢出检测
   memset(p->kstack, 0xAA, 128);
-  dprint("[create_process] kstack allocated for pid=%d at %p (top=%p)\n", p->pid, p->kstack, (void*)((uint64)p->kstack+PGSIZE));
+  // dprint("[create_process] kstack allocated for pid=%d\n", p->pid);
   p->trapframe = 0;
   p->pagetable = 0;
   p->is_kernel_thread = 1;
@@ -166,12 +167,12 @@ int create_process(void (*entry)(void), const char *name){
   p->context.sp = (uint64)p->kstack + PGSIZE;
   strncpy(p->name, name?name:"kth", sizeof(p->name)-1); p->name[sizeof(p->name)-1]='\0';
   p->state = RUNNABLE;
-  dprint("[create] pid=%d name=%s entry=%p sp(set)=%p parent=%d caller_sp_now=%p\n", p->pid, p->name, (void*)entry, (void*)p->context.sp, p->parent?p->parent->pid:-1, read_sp());
-  // 输出哨兵区域
-  dump_stack_window(p->kstack);
+  dprint("[create] pid=%d RUNNABLE\n", p->pid);
+  // 输出哨兵区域（暂时禁用，避免UART阻塞）
+  // dump_stack_window(p->kstack);
   release(&p->lock);
-  dprint("[create_process] released lock pid=%d sp=%p\n", p->pid, read_sp());
-  dump_runnable_counts();
+  // dprint("[create_process] released lock pid=%d\n", p->pid);
+  // dump_runnable_counts();  // 暂时禁用，减少输出
   return p->pid;
 }
 
@@ -452,7 +453,7 @@ int set_priority(int pid, int prio){
 // 让出CPU，进入调度器
 void yield(void){
   if(!current){ dprint("[yield] no current\n"); return; }
-  dprint("[yield] enter pid=%d sp=%p\n", current->pid, read_sp());
+  dprint("[yield] enter pid=%d\n", current->pid);
   acquire(&current->lock);
   if(current->state == RUNNING){ current->state = RUNNABLE; dprint("[yield] pid=%d -> RUNNABLE\n", current->pid); }
   release(&current->lock);
@@ -462,7 +463,7 @@ void yield(void){
   uint64 t1 = r_time();
   ctx_switch_cycles_sum += (t1 - t0);
   ctx_switch_count++;
-  dprint("[yield] return pid_prev=%d cycles=%lu sp=%p\n", current?current->pid:-1, (unsigned long)(t1-t0), read_sp());
+  dprint("[yield] return pid_prev=%d\n", current?current->pid:-1);
 }
 
 // 调度器主循环
@@ -483,14 +484,14 @@ void scheduler(void){
       acquire(&proc[best_idx].lock);
       if(proc[best_idx].state==RUNNABLE){
         proc[best_idx].state=RUNNING; current=&proc[best_idx]; proc[best_idx].sched_count++; proc[best_idx].slice_ticks=0;
-        dprint("[sched] switch to pid=%d prio=%d sp=%p kstack=%p top=%p\n", proc[best_idx].pid, proc[best_idx].priority, read_sp(), proc[best_idx].kstack, (void*)((uint64)proc[best_idx].kstack+PGSIZE));
+        dprint("[sched] switch to pid=%d prio=%d\n", proc[best_idx].pid, proc[best_idx].priority);
         release(&proc[best_idx].lock);
         extern void swtch(struct context*, struct context*);
         swtch(&sched_ctx,&proc[best_idx].context);
-        dprint("[sched] back from pid=%d sp=%p current=%d\n", proc[best_idx].pid, read_sp(), current?current->pid:-1);
+        dprint("[sched] back from pid=%d\n", proc[best_idx].pid);
         acquire(&proc[best_idx].lock);
         if(current && current->state==RUNNING){
-          if(current->priority>1) current->priority -= 2; current->state=RUNNABLE; dprint("[sched] post-run demote pid=%d prio=%d sp=%p\n", current->pid, current->priority, read_sp());
+          if(current->priority>1) current->priority -= 2; current->state=RUNNABLE; dprint("[sched] post-run demote pid=%d prio=%d\n", current->pid, current->priority);
         }
         release(&proc[best_idx].lock);
         current=0;
@@ -588,17 +589,15 @@ void dump_runnable_counts(void){
       struct proc *p = &proc[i];
       if(p == current) {
         if(p->state!=UNUSED){
-            dprint("[dump] pid=%d state=%s parent=%d kstack=%p trapframe=%p pagetable=%p name=%s (current)\n",
-              p->pid, proc_state_name(p->state), p->parent?p->parent->pid:-1,
-              p->kstack, p->trapframe, p->pagetable, p->name);
+            dprint("[dump] pid=%d state=%s parent=%d name=%s (current)\n",
+              p->pid, proc_state_name(p->state), p->parent?p->parent->pid:-1, p->name);
         }
         continue;
       }
       acquire(&p->lock);
       if(p->state!=UNUSED){
-        dprint("[dump] pid=%d state=%s parent=%d kstack=%p trapframe=%p pagetable=%p name=%s\n",
-          p->pid, proc_state_name(p->state), p->parent?p->parent->pid:-1,
-          p->kstack, p->trapframe, p->pagetable, p->name);
+        dprint("[dump] pid=%d state=%s parent=%d name=%s\n",
+          p->pid, proc_state_name(p->state), p->parent?p->parent->pid:-1, p->name);
       }
       release(&p->lock);
     }
