@@ -406,13 +406,16 @@ void fsinit(void) {
   // 创建根目录
   struct inode *root = ialloc(0, T_DIR);
   if (root) {
+    ilock(root);  // 锁定以便后续操作
     root->nlink = 1;
     root->size = 0;
     iupdate(root);
     
     // 添加 . 和 ..
+    begin_op();
     dirlink(root, ".", root->inum);
     dirlink(root, "..", root->inum);
+    end_op();
     
     iunlockput(root);
     printf("[exp7] Root directory created (ino=%d)\n", ROOTINO);
