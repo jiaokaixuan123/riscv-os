@@ -39,6 +39,13 @@ int strncmp(const char *p, const char *q, uint n)   //比较字符串
   return (uchar)*p - (uchar)*q;
 }
 
+int strcmp(const char *p, const char *q)   //比较字符串(不限长度)
+{
+  while(*p && *p == *q)
+    p++, q++;
+  return (uchar)*p - (uchar)*q;
+}
+
 char* strncpy(char *s, const char *t, int n)   //复制字符串
 {
   char *os;

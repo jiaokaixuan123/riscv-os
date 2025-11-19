@@ -2,6 +2,9 @@
 #include "types.h"
 
 void panic(const char *s){
-  printf("panic: %s\n", s ? s : "(null)");
+  printf("\n!!! PANIC: %s !!!\n", s ? s : "(null)");
+  for(int i = 0; i < 5; i++) {
+    printf("PANIC!\n");
+  }
   while(1){}
 }

@@ -34,3 +34,4 @@ swtch:
   ld s10,96(a1)
   ld s11,104(a1)
   ret
+

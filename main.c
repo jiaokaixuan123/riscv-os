@@ -9,10 +9,14 @@
 #include "interrupt.h"
 #include "proc.h"
 #include "memlayout.h" // for USER_MAX_VA
+#include "fs.h"       // 实验7：文件系统
 extern void manager_task();
 extern volatile uint64 timer_interval; // 来自 trap.c
 extern volatile uint64 isr_cycles_sum;
 extern volatile uint64 isr_count;
+extern volatile uint64 ticks;         // 来自 trap.c
+extern spinlock tickslock;            // 来自 trap.c
+extern void run_fs_tests();           // 实验7：文件系统测试
 
 void test_printf_basic() {
   printf("Testing integer: %d\n", 42);
@@ -399,7 +403,7 @@ void test_process_creation(void) {
     } else { break; }
   }
   printf("Created %d processes, control will be returned to run_all_tests to wait for them.\n", count);
-  // 测试等待所有子进程退出
+  // Let run_all_tests wait for all children together
   printf("[test_process_creation] waiting for %d children...\n", count);
   for (int i = 0; i < count; i++) { 
     int status;
@@ -430,6 +434,65 @@ void test_synchronization(void) {
   printf("Synchronization test completed\n");
 }
 
+// 系统调用测试 - 实验6
+void test_syscalls(void) {
+  printf("Testing system calls...\n");
+  
+  // 测试内核态系统调用接口
+  printf("[syscall test] Testing kernel-side syscall handlers:\n");
+  
+  // 1. 测试 getpid
+  if (current) {
+    int pid = current->pid;
+    printf("[syscall] current pid=%d\n", pid);
+  }
+  
+  // 2. 创建一个测试进程来测试 fork/wait/exit
+  printf("[syscall] Creating test processes for fork/wait/exit...\n");
+  
+  // 创建一个简单的测试进程
+  int test_pid = create_process(simple_task, "syscall_test");
+  if (test_pid > 0) {
+    printf("[syscall] Created test process pid=%d\n", test_pid);
+    int status;
+    int reaped = wait_process(&status);
+    if (reaped > 0) {
+      printf("[syscall] Reaped test process pid=%d status=%d\n", reaped, status);
+    }
+  }
+  
+  // 3. 测试优先级设置
+  printf("[syscall] Testing priority setting...\n");
+  int prio_test_pid = create_process(cpu_intensive_task, "prio_test");
+  if (prio_test_pid > 0) {
+    printf("[syscall] Created prio test process pid=%d\n", prio_test_pid);
+    int ret = set_priority(prio_test_pid, 50);
+    printf("[syscall] set_priority returned %d\n", ret);
+    int status;
+    wait_process(&status);
+    printf("[syscall] Prio test process completed\n");
+  }
+  
+  // 4. 测试 sleep（通过 sys_sleep 系统调用）
+  printf("[syscall] Testing sleep syscall...\n");
+  
+  // 使用 sys_sleep 的方式：创建一个进程来调用系统调用
+  // 这里我们直接模拟系统调用的效果
+  acquire(&tickslock);
+  uint64 start_tick = ticks;
+  uint64 target = ticks + 20;  // 睡眠 20 ticks
+  printf("[syscall] Starting sleep at tick %lu, target=%lu\n", start_tick, target);
+  while(ticks < target){
+    sleep_chan((void*)&ticks, &tickslock);
+  }
+  uint64 end_tick = ticks;
+  release(&tickslock);
+  printf("[syscall] Woke up at tick %lu (slept %lu ticks)\n", 
+         end_tick, end_tick - start_tick);
+  
+  printf("System call test completed\n");
+}
+
 // 管理任务存根
 void manager_task(){ printf("[manager_task stub]\n"); exit_process(0); }
 // 运行所有测试
@@ -452,7 +515,14 @@ static void run_all_tests(void){
   exit_process(0);
 }
 
- 
+// 实验6：系统调用测试
+static void run_syscall_tests(void){
+  printf("[exp6] === System Call Tests ===\n");
+  test_syscalls();
+  printf("[exp6] === System Call Tests Completed ===\n");
+  exit_process(0);
+}
+
 int main(void) {
   // volatile char *uart = (char*)0x10000000;
   // *uart = 'S';
@@ -488,10 +558,14 @@ int main(void) {
   // test_exception_handling();              // 测试异常处理
   // test_interrupt_overhead();              // 测试中断开销
 
+  // ==== 实验7：文件系统初始化 ====
+  fsinit();                               // 初始化文件系统
 
-  // ==== 实验5：进程管理与调度器测试  ====
-  proc_init();                            // 初始化进程表 
+  // ==== 实验5：进程管理与调度器测试 和实验6：系统调用测试 ====
+  proc_init();                            // 初始化进程表
   create_process(run_all_tests, "tests"); // 创建测试管理线程
+  create_process(run_syscall_tests, "syscalls"); // 创建实验6系统调用测试线程
+  create_process(run_fs_tests, "fs_tests"); // 创建实验7文件系统测试线程
   scheduler();                            // 进入调度器 (不会返回)
   while(1);
   return 0;
